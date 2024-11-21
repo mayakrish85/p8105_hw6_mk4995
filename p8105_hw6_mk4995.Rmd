@@ -1,0 +1,124 @@
+---
+title: "Homework 6"
+author: "mk4995"
+date: "2024-11-21"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(modelr)
+
+set.seed(1)
+```
+
+## Problem 1
+
+This problem uses the Central Park data that we used earlier in the semester from `rnoaa`.
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+
+Start by conducting a simple linear regression (tmax ~ tmin) as a basic test.
+
+```{r}
+fit = lm(tmax ~ tmin, data = weather_df)
+
+fit |> broom::tidy()
+fit |> broom::glance()
+```
+
+Do some bootstrapping.
+
+```{r}
+boot_straps = 
+  weather_df |> 
+  modelr::bootstrap(5000) |> 
+  mutate(
+    strap = map(strap, as_tibble), 
+    models = map(strap, \(df) lm(tmax ~ tmin, data = df)),
+    tidy_results = map(models, broom::tidy),
+    glance_results = map(models, broom::glance)
+  ) |> 
+  select(.id, tidy_results, glance_results)
+```
+
+Gather results.
+
+```{r}
+bootstrap_r2 =
+  boot_straps |> 
+  unnest(glance_results) |> 
+  group_by(.id) |> 
+  select(.id, r.squared)
+
+bootstrap_log = 
+  boot_straps |> 
+  unnest(tidy_results) |> 
+  select(.id, term, estimate) |> 
+  pivot_wider(
+    names_from = "term",
+    values_from = "estimate"
+  ) |> 
+  rename(
+    b0 = `(Intercept)`,
+    b1 = tmin
+  ) |> 
+  mutate(log_beta_product = log(b0*b1)) |> 
+  select(.id, log_beta_product)
+
+bootstrap_results = 
+  full_join(bootstrap_r2, bootstrap_log, by = ".id") |> 
+  ungroup()
+
+bootstrap_results |> 
+  head(20) |> 
+  knitr::kable()
+```
+
+The table above shows the first 20 rows of data.
+
+```{r}
+bootstrap_results |> 
+  ggplot(aes(x = r.squared)) + geom_histogram() + theme_minimal()
+```
+
+The distribution of the `R-squared` values from bootstrapping 5000 samples is relatively normal with the center of the distribution around 0.91. Almost all values are contained between 0.88 and 0.94.
+
+```{r}
+bootstrap_results |> 
+  ggplot(aes(x = log_beta_product)) + geom_histogram() + theme_minimal()
+```
+
+The distribution of the `log(B1 * B2)` values from bootstrapping 5000 samples is also relatively normal with the center of the distribution around 2.02. Almost all values are contained between 1.94 and 2.08.
+
+Create confidence intervals.
+
+```{r}
+bootstrap_results |> 
+  dplyr::summarize(
+    r_squared_mean = mean(r.squared),
+    r_squared_ci_ll = quantile(r.squared, 0.025),
+    r_squared_ci_ul = quantile(r.squared, 0.975),
+    log_beta_product_mean = mean(log_beta_product),
+    log_product_ci_ll = quantile(log_beta_product, 0.025),
+    log_product_ci_ul = quantile(log_beta_product, 0.975)
+  ) |> 
+  knitr::kable()
+```
+
+
