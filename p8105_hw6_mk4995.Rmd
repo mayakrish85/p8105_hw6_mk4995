@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
 library(modelr)
+library(readr)
 
 set.seed(1)
 ```
@@ -18,7 +19,7 @@ set.seed(1)
 
 This problem uses the Central Park data that we used earlier in the semester from `rnoaa`.
 
-```{r}
+```{r message=FALSE}
 weather_df = 
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
@@ -30,16 +31,6 @@ weather_df =
     tmin = tmin / 10,
     tmax = tmax / 10) %>%
   select(name, id, everything())
-```
-
-
-Start by conducting a simple linear regression (tmax ~ tmin) as a basic test.
-
-```{r}
-fit = lm(tmax ~ tmin, data = weather_df)
-
-fit |> broom::tidy()
-fit |> broom::glance()
 ```
 
 Do some bootstrapping.
@@ -74,11 +65,7 @@ bootstrap_log =
     names_from = "term",
     values_from = "estimate"
   ) |> 
-  rename(
-    b0 = `(Intercept)`,
-    b1 = tmin
-  ) |> 
-  mutate(log_beta_product = log(b0*b1)) |> 
+  mutate(log_beta_product = log(`(Intercept)`*tmin)) |> 
   select(.id, log_beta_product)
 
 bootstrap_results = 
@@ -86,30 +73,31 @@ bootstrap_results =
   ungroup()
 
 bootstrap_results |> 
-  head(20) |> 
+  head(10) |> 
   knitr::kable()
 ```
 
-The table above shows the first 20 rows of data.
+The table above shows the first 10 rows of data.
 
 ```{r}
 bootstrap_results |> 
-  ggplot(aes(x = r.squared)) + geom_histogram() + theme_minimal()
+  ggplot(aes(x = r.squared)) + geom_density() + theme_minimal()
 ```
 
-The distribution of the `R-squared` values from bootstrapping 5000 samples is relatively normal with the center of the distribution around 0.91. Almost all values are contained between 0.88 and 0.94.
+The distribution of the `R-squared` values from bootstrapping 5000 samples is approximately normal with the center of the distribution around 0.91. Almost all values are contained between 0.88 and 0.94.
 
 ```{r}
 bootstrap_results |> 
-  ggplot(aes(x = log_beta_product)) + geom_histogram() + theme_minimal()
+  ggplot(aes(x = log_beta_product)) + geom_density() + theme_minimal()
 ```
 
-The distribution of the `log(B1 * B2)` values from bootstrapping 5000 samples is also relatively normal with the center of the distribution around 2.02. Almost all values are contained between 1.94 and 2.08.
+The distribution of the `log(B0 * B1)` values from bootstrapping 5000 samples is also relatively normal with the center of the distribution around 2.02. Almost all values are contained between 1.94 and 2.08.
 
 Create confidence intervals.
 
 ```{r}
-bootstrap_results |> 
+bootstrap_summary = 
+  bootstrap_results |> 
   dplyr::summarize(
     r_squared_mean = mean(r.squared),
     r_squared_ci_ll = quantile(r.squared, 0.025),
@@ -117,8 +105,124 @@ bootstrap_results |>
     log_beta_product_mean = mean(log_beta_product),
     log_product_ci_ll = quantile(log_beta_product, 0.025),
     log_product_ci_ul = quantile(log_beta_product, 0.975)
-  ) |> 
+  )
+
+bootstrap_summary |>
   knitr::kable()
 ```
+
+The 95% confidence interval for `r^2` is (`r bootstrap_summary$r_squared_ci_ll`, `r bootstrap_summary$r_squared_ci_ul`). The 95% confidence interval for `log beta product` is (`r bootstrap_summary$log_product_ci_ll`, `r bootstrap_summary$log_product_ci_ul`). 
+
+
+## Problem 2
+
+Import the Washington Post data on homicides in 50 large U.S. cities.
+
+```{r message=FALSE}
+url = "https://raw.githubusercontent.com/washingtonpost/data-homicides/master/homicide-data.csv"
+homicide_data = read_csv(url)
+```
+
+**Clean the data** by creating a city-state variable and a binary variable indicating whether the homicide is solved. Omit cities Dallas, TX; Phoenix, AZ; Kansas City, MO; and Tulsa, AL. For this problem, limit your analysis those for whom victim_race is white or black. Be sure that victim_age is numeric.
+
+```{r}
+homicide_data = 
+  homicide_data |> 
+  mutate(
+    city_state = str_c(city, state, sep = ", "),
+    solved = ifelse(disposition == "Closed by arrest", 1, 0),
+    victim_age = as.numeric(victim_age)
+  ) |> 
+  filter(
+    !(city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")),
+    victim_race %in% c("White", "Black")
+  )
+```
+
+**Use the `glm` function to fit a logistic regression with resolved vs unresolved homicides as the outcome and victim age, sex and race as predictors for Baltimore, MD.**
+
+```{r}
+baltimore_homicides = 
+  homicide_data |> 
+  filter(city_state == "Baltimore, MD")
+
+baltimore_glm = 
+  baltimore_homicides |> 
+  glm(solved ~ victim_age + victim_sex + victim_race, 
+      data = _,
+      family = binomial())
+```
+
+Save the output of glm as an R object; apply `broom::tidy` to this object; and **obtain the estimate and confidence interval of the adjusted odds ratio for solving homicides comparing male victims to female victims keeping all other variables fixed.**
+
+```{r}
+baltimore_or_results = 
+  baltimore_glm |> 
+  broom::tidy() |> 
+  mutate(
+    OR = exp(estimate),
+    OR_ci_ll = exp(estimate - 1.96 * std.error),
+    OR_ci_ul = exp(estimate + 1.96 * std.error)
+  ) |> 
+  filter(term == "victim_sexMale") |> 
+  select(OR, OR_ci_ll, OR_ci_ul)
+
+baltimore_or_results |>
+  knitr::kable(digits=3)
+```
+
+The confidence interval for the adjusted OR for solving homicides comparing male victims to female victims is (`r baltimore_or_results$OR_ci_ll`, `r baltimore_or_results$OR_ci_ul`).
+
+**Now run `glm` for each of the cities in the dataset and extract the adjusted odds ratio (and CI) for solving homicides comparing male victims to female victims.**
+
+```{r}
+homicides_glm = 
+  homicide_data |> 
+  nest(data = -city_state) |> 
+  mutate(
+    models = map(data, \(df) glm(
+      solved ~ victim_age + victim_sex + victim_race, 
+      data = df, 
+      family = binomial())
+    ),
+    results = map(models, broom::tidy)) |> 
+  select(-data, -models) |> 
+  unnest(results)
+
+homicide_ORs = 
+  homicides_glm |> 
+  mutate(
+    OR = exp(estimate),
+    OR_ci_ll = exp(estimate - 1.96 * std.error),
+    OR_ci_ul = exp(estimate + 1.96 * std.error)
+  ) |> 
+  filter(term == "victim_sexMale") |> 
+  select(city_state, OR, OR_ci_ll, OR_ci_ul)
+
+homicide_ORs |> 
+  head(10) |> 
+  knitr::kable()
+```
+
+The table above shows the first 10 rows of our OR dataframe for each city. There are 47 rows in total.
+
+**Create a plot that shows the estimated ORs and CIs for each city. Organize cities according to estimated OR, and comment on the plot.**
+
+```{r}
+homicide_ORs |> 
+  arrange(OR) |> 
+  mutate(city_state = factor(city_state, levels = city_state)) |> 
+  ggplot(aes(x = city_state, y = OR)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = OR_ci_ll, ymax = OR_ci_ul)) +
+  labs(
+    title = "Estimated ORs and CIs of Solved vs. Unsolved Homicides by City for Male vs. Female Victims",
+    x = "City, State",
+    y = "Estimated OR of Solved Homicides"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+From the plot, we can see that most adjusted OR estimates are below 1 across the 47 cities, meaning that male victims are less likely to have their homicides solved compared to female victims. However, since some confidence intervals also include 1, we must be careful to mak that generalization. Only in those cities where the confidence interval does not include 1 can we say that male victims are *significantly* less likely to have their homicides solved compared to female victims. New York has the smallest odds ratio, so we'd say that the disparity between solved cases for male vs. female victims is the biggest there. Albuqerque has the highest odds ratio, but since the 95% CI includes 1, we cannot generalize any significant difference in solved male victim cases vs. female victim cases.
 
 
