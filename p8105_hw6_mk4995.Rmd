@@ -276,26 +276,18 @@ Check for missing data.
 any(is.na(bwt))
 ```
 
-To create my regression model for birthweight, I searched on Google Scholar for articles related to "factors affecting birthweight". One article on Maternal Factors for Low Birth Weight Babies (found here: https://pmc.ncbi.nlm.nih.gov/articles/PMC4921448/) hypothesized that birthweight is affected by the following factors of interest that are also included in this dataset:
+To create my regression model for birthweight, I searched on Google Scholar for articles related to "factors affecting birthweight". One article titled "Factors influencing the birth weight in normal pregnancy" (found here: https://www.sciencedirect.com/science/article/abs/pii/0002937865902486) hypothesized that birthweight is affected by the following factors of interest that are also included in this dataset:
 
-- Maternal age at delivery
+- Sex and gestational age of the infant
 
-- Pre-pregnancy BMI
+- Weight, height, body build of the mother, and of the maternal weight gain during pregnancy
 
-- Pre-pregnancy weight
-
-- Number of live births prior to this pregnancy
-
-- Previous number of low birth weight babies
-
-- Number of prior small for gestational age babies
-
-The article also noted that bad obstetric history, pre eclampsia, fetal distress, and mode of deliveries were studied, but we will focus on the ones listed above as they are available in our dataset.
+I will create a model only using the simple effects of the factors above.
 
 ```{r}
 bwt_model = 
   bwt |> 
-  lm(bwt ~ momage + ppbmi + ppwt + parity + pnumlbw + pnumsga, data = _)
+  lm(bwt ~ babysex + gaweeks + wtgain + mheight , data = _)
 ```
 
 Plot model residuals against fitted values.
@@ -314,4 +306,59 @@ bwt |>
 ```
 
 
+Compare my model to two other models.
 
+- `model1`: One using length at birth and gestational age as predictors (main effects only)
+
+- `model2`: One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
+
+
+```{r}
+model1 = 
+  bwt |> 
+  lm(bwt ~ blength + gaweeks, data = _)
+
+model2 = 
+  bwt |> 
+  lm(bwt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + bhead*blength*babysex, data = _)
+```
+
+Make this comparison in terms of the cross-validated prediction error.
+
+```{r}
+cv_df = 
+  crossv_mc(bwt, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+cv_res_df =
+  cv_df |> 
+  mutate(
+    model1 = map(train, \(x) lm(bwt ~ babysex + gaweeks + wtgain + mheight , data = x)),
+    model2 = map(train, \(x) lm(bwt ~ blength + gaweeks, data = x)),
+    model3 = map(train, \(x) lm(bwt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + bhead*blength*babysex, data = x))
+  ) |> 
+  mutate(
+    rmse_model1 = map2_dbl(model1, test, rmse),
+    rmse_model2 = map2_dbl(model2, test, rmse),
+    rmse_model3 = map2_dbl(model3, test, rmse)
+  )
+```
+
+```{r}
+cv_res_df |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) |> 
+  ggplot(aes(x = model, y = rmse, fill = model)) + 
+  geom_violin()
+```
+
+
+My model had the highest RMSE distribution, whereas model 3 (which included the interactions) has the lowest distribution. Thus, we can conclude that the last model has the best predictive accuracy.
